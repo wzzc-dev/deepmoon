@@ -1,0 +1,85 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "wzzc-dev/deepmoon"
+
+// Values
+pub async fn append_history_message(String?, Message) -> Unit
+
+pub fn build_chat_request(String, Array[Message], Array[ToolSpec]) -> Json
+
+pub async fn cli_main() -> Unit
+
+pub fn command_allowed(Array[String]) -> Bool
+
+pub fn default_history_path() -> String
+
+pub fn default_system_prompt() -> String
+
+pub fn default_tool_specs() -> Array[ToolSpec]
+
+pub async fn ensure_history_path(String) -> Unit
+
+pub fn parse_chat_response(Json) -> Message raise
+
+pub fn path_is_lexically_safe(String) -> Bool
+
+pub async fn[C : ModelClient] run_agent(AgentConfig, C, Array[Message]) -> AgentResult
+
+pub async fn run_tool(AgentConfig, ToolCall) -> String
+
+// Errors
+
+// Types and methods
+pub(all) struct AgentConfig {
+  api_key : String
+  base_url : String
+  model : String
+  workspace : String
+  history_path : String?
+  max_steps : Int
+  mut debug : Bool
+}
+
+pub(all) struct AgentResult {
+  final_text : String
+  messages : Array[Message]
+}
+
+pub struct HttpModelClient {
+}
+pub fn HttpModelClient::new() -> Self
+pub impl ModelClient for HttpModelClient
+
+pub(all) struct Message {
+  role : String
+  content : String?
+  tool_calls : Array[ToolCall]
+  tool_call_id : String?
+}
+pub fn Message::assistant(String?, Array[ToolCall]) -> Self
+pub fn Message::system(String) -> Self
+pub fn Message::to_chat_json(Self) -> Json
+pub fn Message::to_history_json(Self) -> Json
+pub fn Message::tool(String, String) -> Self
+pub fn Message::user(String) -> Self
+
+pub(all) struct ToolCall {
+  id : String
+  name : String
+  arguments : String
+}
+pub fn ToolCall::to_chat_json(Self) -> Json
+
+pub(all) struct ToolSpec {
+  name : String
+  description : String
+  parameters : Json
+}
+pub fn ToolSpec::to_chat_json(Self) -> Json
+
+// Type aliases
+
+// Traits
+pub(open) trait ModelClient {
+  async complete(Self, AgentConfig, Array[Message], Array[ToolSpec]) -> Message
+}
+

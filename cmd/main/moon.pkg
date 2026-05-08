@@ -1,6 +1,7 @@
-// import {
-//   "wzzc-dev/deepmoon" @lib,
-// }
+import {
+  "moonbitlang/async",
+  "wzzc-dev/deepmoon" @lib,
+}
 
 options(
   "is-main": true,

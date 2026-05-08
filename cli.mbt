@@ -55,7 +55,7 @@ fn parse_options(args : ArrayView[String]) -> (CliOptions?, String?) {
         break
       }
       ["--debug", .. tail] => {
-        options.debug = true
+        options.debug = false
         continue tail
       }
       ["--base-url", value, .. tail] => {

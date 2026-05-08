@@ -1,0 +1,7 @@
+// import {
+//   "wzzc-dev/deepmoon" @lib,
+// }
+
+options(
+  "is-main": true,
+)

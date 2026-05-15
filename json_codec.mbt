@@ -95,6 +95,16 @@ pub fn build_chat_request(
   messages : Array[Message],
   tools : Array[ToolSpec],
 ) -> Json {
+  build_chat_request_with_stream(model, messages, tools, stream=false)
+}
+
+///|
+fn build_chat_request_with_stream(
+  model : String,
+  messages : Array[Message],
+  tools : Array[ToolSpec],
+  stream~ : Bool,
+) -> Json {
   let fields : Array[(String, Json)] = [
     ("model", Json::string(model)),
     ("messages", Json::array(messages.map(message => message.to_chat_json()))),
@@ -102,6 +112,12 @@ pub fn build_chat_request(
   if !tools.is_empty() {
     fields.push(("tools", Json::array(tools.map(tool => tool.to_chat_json()))))
     fields.push(("tool_choice", Json::string("auto")))
+  }
+  if stream {
+    fields.push(("stream", Json::boolean(true)))
+    fields.push(
+      ("stream_options", json_obj([("include_usage", Json::boolean(true))])),
+    )
   }
   json_obj(fields)
 }
@@ -189,6 +205,158 @@ pub fn parse_chat_response(value : Json) -> CompletionResult raise {
     None => None
   }
   { message: parsed_message, usage }
+}
+
+///|
+priv struct StreamToolCallBuilder {
+  mut id : String?
+  mut name : String?
+  arguments : StringBuilder
+}
+
+///|
+priv struct ChatStreamState {
+  content : StringBuilder
+  builders : Map[Int, StreamToolCallBuilder]
+  order : Array[Int]
+  mut usage : TokenUsage?
+}
+
+///|
+fn ChatStreamState::new() -> ChatStreamState {
+  { content: StringBuilder::new(), builders: {}, order: [], usage: None }
+}
+
+///|
+fn ChatStreamState::tool_builder(
+  self : ChatStreamState,
+  index : Int,
+) -> StreamToolCallBuilder {
+  match self.builders.get(index) {
+    Some(builder) => builder
+    None => {
+      let builder : StreamToolCallBuilder = {
+        id: None,
+        name: None,
+        arguments: StringBuilder::new(),
+      }
+      self.builders[index] = builder
+      self.order.push(index)
+      builder
+    }
+  }
+}
+
+///|
+fn ChatStreamState::apply_tool_delta(
+  self : ChatStreamState,
+  value : Json,
+) -> Unit {
+  guard json_int_field(value, "index") is Some(index) else { return }
+  let builder = self.tool_builder(index)
+  if json_string_field(value, "id") is Some(id) {
+    builder.id = Some(id)
+  }
+  if json_get(value, "function") is Some(function_json) {
+    if json_string_field(function_json, "name") is Some(name) {
+      builder.name = Some(name)
+    }
+    if json_string_field(function_json, "arguments") is Some(arguments) {
+      builder.arguments.write_string(arguments)
+    }
+  }
+}
+
+///|
+async fn ChatStreamState::apply_chunk(
+  self : ChatStreamState,
+  value : Json,
+  sink : ModelStreamSink,
+) -> Unit {
+  if json_get(value, "usage") is Some(usage_json) {
+    if parse_usage_json(usage_json) is Some(usage) {
+      self.usage = Some(usage)
+    }
+  }
+  guard json_get(value, "choices") is Some(Array(choices)) else { return }
+  for choice in choices {
+    if json_get(choice, "delta") is Some(delta) {
+      if json_string_field(delta, "content") is Some(text) && text != "" {
+        self.content.write_string(text)
+        sink.text_delta(text)
+      }
+      if json_get(delta, "tool_calls") is Some(Array(tool_calls)) {
+        for call in tool_calls {
+          self.apply_tool_delta(call)
+        }
+      }
+    }
+  }
+}
+
+///|
+fn ChatStreamState::completion_result(
+  self : ChatStreamState,
+) -> CompletionResult {
+  let tool_calls : Array[ToolCall] = []
+  for index in self.order {
+    if self.builders.get(index) is Some(builder) {
+      if builder.id is Some(id) && builder.name is Some(name) {
+        let raw_arguments = builder.arguments.to_string()
+        let arguments = if raw_arguments == "" { "{}" } else { raw_arguments }
+        tool_calls.push({ id, name, arguments })
+      }
+    }
+  }
+  let content = self.content.to_string()
+  let message_content = if content == "" && !tool_calls.is_empty() {
+    None
+  } else {
+    Some(content)
+  }
+  {
+    message: Message::assistant(message_content, tool_calls),
+    usage: self.usage,
+  }
+}
+
+///|
+fn sse_data_payload(line : String) -> String? {
+  let trimmed = line.trim().to_owned()
+  if trimmed == "" || trimmed.has_prefix(":") {
+    return None
+  }
+  match trimmed.strip_prefix("data:") {
+    Some(payload) => Some(payload.trim().to_owned())
+    None => None
+  }
+}
+
+///|
+async fn ChatStreamState::apply_sse_payload(
+  self : ChatStreamState,
+  payload : String,
+  sink : ModelStreamSink,
+) -> Bool {
+  if payload == "[DONE]" {
+    true
+  } else {
+    let value = @json.parse(payload)
+    self.apply_chunk(value, sink)
+    false
+  }
+}
+
+///|
+async fn ChatStreamState::apply_sse_line(
+  self : ChatStreamState,
+  line : String,
+  sink : ModelStreamSink,
+) -> Bool {
+  match sse_data_payload(line) {
+    Some(payload) => self.apply_sse_payload(payload, sink)
+    None => false
+  }
 }
 
 ///|

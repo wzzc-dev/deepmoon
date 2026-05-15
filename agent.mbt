@@ -1,11 +1,17 @@
 ///|
-fn trace_tool(config : AgentConfig, call : ToolCall, output : String) -> Unit {
-  println("[tool] \{call.name} \{summarize_text(call.arguments, 160)}")
+async fn trace_tool(
+  config : AgentConfig,
+  call : ToolCall,
+  output : String,
+  sink : ModelStreamSink,
+) -> Unit {
   if config.debug {
-    println(output)
+    sink.tool_status(
+      "[tool] \{call.name} \{summarize_text(call.arguments, 160)}\n\{output}",
+    )
   } else {
     let compact = output.replace_all(old="\n", new=" ")
-    println("[tool] output: \{summarize_text(compact, 200)}")
+    sink.tool_status("[tool] \{call.name}: \{summarize_text(compact, 200)}")
   }
 }
 
@@ -57,7 +63,6 @@ async fn execute_tool_batch(
     }
     return outputs
   }
-  println("[tool] running \{calls.length()} safe calls in parallel")
   let jobs : Array[async () -> String] = []
   for call in calls {
     let this_call = call
@@ -72,6 +77,7 @@ async fn execute_tool_calls(
   registry : ToolRegistry,
   session : SessionState,
   calls : Array[ToolCall],
+  sink : ModelStreamSink,
 ) -> Unit {
   let mut index = 0
   while index < calls.length() {
@@ -92,11 +98,16 @@ async fn execute_tool_calls(
           break
         }
       }
+      if batch.length() > 1 {
+        sink.tool_status(
+          "[tool] running \{batch.length()} safe calls in parallel",
+        )
+      }
       let outputs = execute_tool_batch(registry, batch)
       for i = 0; i < batch.length(); i = i + 1 {
         let tool_call = batch[i]
         let output = outputs[i]
-        trace_tool(config, tool_call, output)
+        trace_tool(config, tool_call, output, sink)
         append_session_message(
           config,
           session,
@@ -106,7 +117,7 @@ async fn execute_tool_calls(
       index = cursor
     } else {
       let output = registry.run_tool_call(call)
-      trace_tool(config, call, output)
+      trace_tool(config, call, output, sink)
       append_session_message(config, session, Message::tool(call.id, output))
       index += 1
     }
@@ -114,11 +125,13 @@ async fn execute_tool_calls(
 }
 
 ///|
-pub async fn[C : ModelClient] run_agent(
+async fn[C : ModelClient] run_agent_inner(
   config : AgentConfig,
   client : C,
   registry : ToolRegistry,
   session : SessionState,
+  sink : ModelStreamSink,
+  stream~ : Bool,
 ) -> AgentResult {
   let max_steps = config.max_steps.max(1)
   let mut step = 0
@@ -127,11 +140,16 @@ pub async fn[C : ModelClient] run_agent(
       ignore(compact_session_history(config, client, session))
     }
     let request_messages = build_model_messages(config, session)
-    let result = client.complete(
-      config,
-      request_messages,
-      registry.tool_specs(),
-    )
+    let result = if stream {
+      client.complete_stream(
+        config,
+        request_messages,
+        registry.tool_specs(),
+        sink,
+      )
+    } else {
+      client.complete(config, request_messages, registry.tool_specs())
+    }
     record_usage(config, session, result.usage)
     append_session_message(config, session, result.message)
     if result.message.tool_calls.is_empty() {
@@ -141,13 +159,50 @@ pub async fn[C : ModelClient] run_agent(
       }
       return { final_text, messages: session.history.copy() }
     }
-    execute_tool_calls(config, registry, session, result.message.tool_calls)
+    execute_tool_calls(
+      config,
+      registry,
+      session,
+      result.message.tool_calls,
+      sink,
+    )
     step += 1
   }
   let final_text = "Stopped after \{max_steps} tool-calling step(s)."
+  if stream {
+    sink.text_delta(final_text)
+  }
   let stop_message = Message::assistant(Some(final_text), [])
   append_session_message(config, session, stop_message)
   { final_text, messages: session.history.copy() }
+}
+
+///|
+pub async fn[C : ModelClient] run_agent(
+  config : AgentConfig,
+  client : C,
+  registry : ToolRegistry,
+  session : SessionState,
+) -> AgentResult {
+  run_agent_inner(
+    config,
+    client,
+    registry,
+    session,
+    ModelStreamSink::noop(),
+    stream=false,
+  )
+}
+
+///|
+async fn[C : ModelClient] run_agent_stream(
+  config : AgentConfig,
+  client : C,
+  registry : ToolRegistry,
+  session : SessionState,
+  sink : ModelStreamSink,
+) -> AgentResult {
+  run_agent_inner(config, client, registry, session, sink, stream=true)
 }
 
 ///|

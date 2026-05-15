@@ -48,6 +48,12 @@ pub struct CompletionResult {
 }
 
 ///|
+pub(all) struct ModelStreamSink {
+  on_text_delta : async (String) -> Unit
+  on_tool_status : async (String) -> Unit
+}
+
+///|
 pub struct TodoItem {
   id : Int
   content : String
@@ -113,6 +119,48 @@ pub fn Message::tool(tool_call_id : String, content : String) -> Message {
 }
 
 ///|
+pub fn ModelStreamSink::noop() -> ModelStreamSink {
+  {
+    on_text_delta: async fn(_text) { @async.sleep(0) },
+    on_tool_status: async fn(_text) { @async.sleep(0) },
+  }
+}
+
+///|
+pub async fn ModelStreamSink::text_delta(
+  self : ModelStreamSink,
+  text : String,
+) -> Unit {
+  (self.on_text_delta)(text)
+}
+
+///|
+pub async fn ModelStreamSink::tool_status(
+  self : ModelStreamSink,
+  text : String,
+) -> Unit {
+  (self.on_tool_status)(text)
+}
+
+///|
 pub(open) trait ModelClient {
   async complete(Self, AgentConfig, Array[Message], Array[ToolSpec]) -> CompletionResult
+  async complete_stream(
+    Self,
+    AgentConfig,
+    Array[Message],
+    Array[ToolSpec],
+    ModelStreamSink,
+  ) -> CompletionResult = _
+}
+
+///|
+impl ModelClient with complete_stream(self, config, messages, tools, sink) {
+  let result = self.complete(config, messages, tools)
+  if result.message.tool_calls.is_empty() {
+    if result.message.content is Some(text) && text != "" {
+      sink.text_delta(text)
+    }
+  }
+  result
 }

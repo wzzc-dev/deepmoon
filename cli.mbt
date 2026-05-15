@@ -245,6 +245,58 @@ fn has_help(args : ArrayView[String]) -> Bool {
 }
 
 ///|
+priv struct CliStreamState {
+  mut wrote_text : Bool
+  mut needs_prefix : Bool
+}
+
+///|
+async fn write_line_if_needed(text : String, to_stderr? : Bool = false) -> Unit {
+  if text == "" || !text.has_suffix("\n") {
+    if to_stderr {
+      @stdio.stderr.write("\n")
+    } else {
+      @stdio.stdout.write("\n")
+    }
+  }
+}
+
+///|
+fn run_stream_sink() -> ModelStreamSink {
+  {
+    on_text_delta: async fn(text) { @stdio.stdout.write(text) },
+    on_tool_status: async fn(text) {
+      @stdio.stderr.write(text)
+      write_line_if_needed(text, to_stderr=true)
+    },
+  }
+}
+
+///|
+fn repl_stream_sink() -> ModelStreamSink {
+  let state = { wrote_text: false, needs_prefix: false }
+  {
+    on_text_delta: async fn(text) {
+      if state.needs_prefix {
+        @stdio.stdout.write("DeepMoon: ")
+        state.needs_prefix = false
+      }
+      @stdio.stdout.write(text)
+      state.wrote_text = true
+    },
+    on_tool_status: async fn(text) {
+      if state.wrote_text || !state.needs_prefix {
+        @stdio.stdout.write("\n")
+      }
+      @stdio.stdout.write(text)
+      write_line_if_needed(text)
+      state.wrote_text = false
+      state.needs_prefix = true
+    },
+  }
+}
+
+///|
 async fn run_command(args : ArrayView[String]) -> Unit {
   if has_help(args) {
     println(usage())
@@ -274,8 +326,14 @@ async fn run_command(args : ArrayView[String]) -> Unit {
   let user_message = Message::user(task)
   session.history.push(user_message)
   append_persistent_message(config, session, user_message)
-  let result = run_agent(config, client, registry, session)
-  println(result.final_text)
+  let result = run_agent_stream(
+    config,
+    client,
+    registry,
+    session,
+    run_stream_sink(),
+  )
+  write_line_if_needed(result.final_text)
 }
 
 ///|
@@ -286,6 +344,90 @@ fn print_skills(session : SessionState) -> Unit {
 ///|
 fn print_todos(session : SessionState) -> Unit {
   println(render_todos(session.todos))
+}
+
+///|
+priv enum ReplReadResult {
+  ReplNeedMore
+  ReplEof
+  ReplCommand(String)
+  ReplMessage(String)
+}
+
+///|
+fn repl_line_text(line : String) -> String {
+  line.trim(chars="\r").to_owned()
+}
+
+///|
+fn is_repl_command(input : String) -> Bool {
+  match input {
+    "/exit"
+    | "/clear"
+    | "/debug on"
+    | "/debug off"
+    | "/skills"
+    | "/todos"
+    | "/compact" => true
+    _ => false
+  }
+}
+
+///|
+fn repl_read_result_from_lines(
+  raw_lines : Array[String],
+  eof~ : Bool,
+) -> ReplReadResult {
+  let lines : Array[String] = []
+  for raw in raw_lines {
+    let line = repl_line_text(raw)
+    let trimmed = line.trim().to_owned()
+    if lines.is_empty() && is_repl_command(trimmed) {
+      return ReplCommand(trimmed)
+    }
+    if trimmed == "" {
+      if !lines.is_empty() {
+        return ReplMessage(lines.join("\n"))
+      }
+    } else {
+      lines.push(line)
+    }
+  }
+  if eof {
+    if lines.is_empty() {
+      ReplEof
+    } else {
+      ReplMessage(lines.join("\n"))
+    }
+  } else {
+    ReplNeedMore
+  }
+}
+
+///|
+async fn read_repl_input() -> ReplReadResult {
+  let lines : Array[String] = []
+  while true {
+    if lines.is_empty() {
+      @stdio.stdout.write("User: ")
+    } else {
+      @stdio.stdout.write("... ")
+    }
+    match @stdio.stdin.read_until("\n") {
+      None => return repl_read_result_from_lines(lines, eof=true)
+      Some(line) => {
+        if lines.is_empty() && repl_line_text(line).trim().to_owned() == "" {
+          continue
+        }
+        lines.push(line)
+        match repl_read_result_from_lines(lines, eof=false) {
+          ReplNeedMore => continue
+          result => return result
+        }
+      }
+    }
+  }
+  ReplEof
 }
 
 ///|
@@ -315,34 +457,31 @@ async fn repl_command(args : ArrayView[String]) -> Unit {
   let session = open_main_session(config, client)
   let registry = build_tool_registry(config, session, client)
   while true {
-    @stdio.stdout.write("deepmoon> ")
-    match @stdio.stdin.read_until("\n") {
-      None => break
-      Some(line) => {
-        let input = line.trim().to_owned()
-        if input == "" {
-          continue
-        } else if input == "/exit" {
+    match read_repl_input() {
+      ReplEof => break
+      ReplNeedMore => continue
+      ReplCommand(command) =>
+        if command == "/exit" {
           break
-        } else if input == "/clear" {
+        } else if command == "/clear" {
           session.clear_working()
           println("working context cleared")
           continue
-        } else if input == "/debug on" {
+        } else if command == "/debug on" {
           config.debug = true
           println("debug on")
           continue
-        } else if input == "/debug off" {
+        } else if command == "/debug off" {
           config.debug = false
           println("debug off")
           continue
-        } else if input == "/skills" {
+        } else if command == "/skills" {
           print_skills(session)
           continue
-        } else if input == "/todos" {
+        } else if command == "/todos" {
           print_todos(session)
           continue
-        } else if input == "/compact" {
+        } else if command == "/compact" {
           session.force_compact = true
           if compact_session_history(config, client, session) {
             println("history compacted")
@@ -351,11 +490,19 @@ async fn repl_command(args : ArrayView[String]) -> Unit {
           }
           continue
         }
+      ReplMessage(input) => {
         let user_message = Message::user(input)
         session.history.push(user_message)
         append_persistent_message(config, session, user_message)
-        let result = run_agent(config, client, registry, session)
-        println(result.final_text)
+        @stdio.stdout.write("DeepMoon: ")
+        let result = run_agent_stream(
+          config,
+          client,
+          registry,
+          session,
+          repl_stream_sink(),
+        )
+        write_line_if_needed(result.final_text)
       }
     }
   }

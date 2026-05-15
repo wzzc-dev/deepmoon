@@ -71,6 +71,89 @@ test "parse chat response with tool call and usage" {
 }
 
 ///|
+fn test_stream_sink(out : StringBuilder) -> ModelStreamSink {
+  {
+    on_text_delta: async fn(text) {
+      out.write_string(text)
+      @async.sleep(0)
+    },
+    on_tool_status: async fn(_text) { @async.sleep(0) },
+  }
+}
+
+///|
+async test "parse chat stream text chunks and usage" {
+  let out = StringBuilder::new()
+  let sink = test_stream_sink(out)
+  let state = ChatStreamState::new()
+  assert_false(
+    state.apply_sse_line(
+      (
+        #|data: {"choices":[{"delta":{"content":"Hello"}}],"usage":null}
+      ),
+      sink,
+    ),
+  )
+  assert_false(
+    state.apply_sse_line(
+      (
+        #|data: {"choices":[{"delta":{"content":" world"}}],"usage":null}
+      ),
+      sink,
+    ),
+  )
+  assert_false(
+    state.apply_sse_line(
+      (
+        #|data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}
+      ),
+      sink,
+    ),
+  )
+  assert_true(state.apply_sse_line("data: [DONE]", sink))
+  let result = state.completion_result()
+  assert_true(out.to_string() == "Hello world")
+  assert_true(result.message.content is Some("Hello world"))
+  assert_true(result.usage is Some({ prompt_tokens: 4, total_tokens: 6, .. }))
+}
+
+///|
+async test "parse chat stream tool call argument chunks" {
+  let out = StringBuilder::new()
+  let sink = test_stream_sink(out)
+  let state = ChatStreamState::new()
+  ignore(
+    state.apply_sse_line(
+      (
+        #|data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{"}}]}}],"usage":null}
+      ),
+      sink,
+    ),
+  )
+  ignore(
+    state.apply_sse_line(
+      (
+        #|data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"path\":\"README.mbt.md\"}"}}]}}],"usage":null}
+      ),
+      sink,
+    ),
+  )
+  let result = state.completion_result()
+  assert_true(result.message.content is None)
+  assert_true(
+    result.message.tool_calls
+    is [
+      {
+        id: "call_1",
+        name: "read_file",
+        arguments: "{\"path\":\"README.mbt.md\"}",
+      },
+    ],
+  )
+  assert_true(out.to_string() == "")
+}
+
+///|
 struct FakeClient {
   mut calls : Int
 }
@@ -168,7 +251,7 @@ fn test_session() -> SessionState {
 
 ///|
 async test "agent loop executes tool call and returns final answer" {
-  let fake = { calls: 0 }
+  let fake : FakeClient = { calls: 0 }
   let session = test_session()
   session.history.push(Message::user("read readme"))
   let registry = build_tool_registry(
@@ -185,6 +268,81 @@ async test "agent loop executes tool call and returns final answer" {
   assert_true(result.final_text == "done")
   assert_true(fake.calls == 2)
   assert_true(result.messages.any(message => message.role == "tool"))
+}
+
+///|
+struct StreamingFakeClient {
+  mut calls : Int
+}
+
+///|
+impl ModelClient for StreamingFakeClient with complete(
+  self,
+  _config,
+  _messages,
+  _tools,
+) {
+  self.calls += 1
+  {
+    message: Message::assistant(Some("fallback"), []),
+    usage: Some({ prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }),
+  }
+}
+
+///|
+impl ModelClient for StreamingFakeClient with complete_stream(
+  self,
+  _config,
+  _messages,
+  _tools,
+  sink,
+) {
+  self.calls += 1
+  sink.text_delta("stream")
+  sink.text_delta("ed")
+  {
+    message: Message::assistant(Some("streamed"), []),
+    usage: Some({ prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 }),
+  }
+}
+
+///|
+async test "agent stream emits deltas and records final message" {
+  let fake : StreamingFakeClient = { calls: 0 }
+  let session = test_session()
+  session.history.push(Message::user("say hello"))
+  let registry = build_tool_registry(
+    test_config(history_path=None),
+    session,
+    fake,
+  )
+  let out = StringBuilder::new()
+  let result = run_agent_stream(
+    test_config(history_path=None),
+    fake,
+    registry,
+    session,
+    test_stream_sink(out),
+  )
+  assert_true(fake.calls == 1)
+  assert_true(out.to_string() == "streamed")
+  assert_true(result.final_text == "streamed")
+  assert_true(result.messages.last() is Some({ content: Some("streamed"), .. }))
+}
+
+///|
+test "repl input helper supports commands multiline and eof submit" {
+  assert_true(
+    repl_read_result_from_lines(["/exit"], eof=false) is ReplCommand("/exit"),
+  )
+  assert_true(
+    repl_read_result_from_lines(["hello", "world", ""], eof=false)
+    is ReplMessage("hello\nworld"),
+  )
+  assert_true(repl_read_result_from_lines([""], eof=false) is ReplNeedMore)
+  assert_true(
+    repl_read_result_from_lines(["draft"], eof=true) is ReplMessage("draft"),
+  )
 }
 
 ///|

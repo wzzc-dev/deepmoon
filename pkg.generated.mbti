@@ -142,6 +142,14 @@ pub fn Message::to_memory_json(Self, String) -> Json
 pub fn Message::tool(String, String) -> Self
 pub fn Message::user(String) -> Self
 
+pub(all) struct ModelStreamSink {
+  on_text_delta : async (String) -> Unit
+  on_tool_status : async (String) -> Unit
+}
+pub fn ModelStreamSink::noop() -> Self
+pub async fn ModelStreamSink::text_delta(Self, String) -> Unit
+pub async fn ModelStreamSink::tool_status(Self, String) -> Unit
+
 pub(all) struct SessionState {
   base_prompt : String
   mut history : Array[Message]
@@ -249,5 +257,6 @@ pub fn ToolSpec::to_chat_json(Self) -> Json
 // Traits
 pub(open) trait ModelClient {
   async complete(Self, AgentConfig, Array[Message], Array[ToolSpec]) -> CompletionResult
+  async complete_stream(Self, AgentConfig, Array[Message], Array[ToolSpec], ModelStreamSink) -> CompletionResult = _
 }
 

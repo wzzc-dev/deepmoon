@@ -1,19 +1,4 @@
 ///|
-fn parent_dir(path : String) -> String {
-  match path.rev_split_once("/") {
-    Some((dir, _)) => {
-      let text = dir.to_owned()
-      if text == "" {
-        "."
-      } else {
-        text
-      }
-    }
-    None => "."
-  }
-}
-
-///|
 pub async fn ensure_history_path(path : String) -> Unit {
   let dir = parent_dir(path)
   if dir != "." && !@fs.exists(dir) {
@@ -36,4 +21,16 @@ pub async fn append_history_message(path : String?, message : Message) -> Unit {
 ///|
 pub fn default_history_path() -> String {
   ".deepmoon/sessions/\{@env.now()}.jsonl"
+}
+
+///|
+pub async fn append_persistent_message(
+  config : AgentConfig,
+  session : SessionState,
+  message : Message,
+) -> Unit {
+  append_history_message(config.history_path, message)
+  if session.memory_store is Some(store) {
+    store.append_message(message)
+  }
 }

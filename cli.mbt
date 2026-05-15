@@ -4,6 +4,9 @@ priv struct CliOptions {
   mut model : String?
   mut history : String?
   mut max_steps : Int?
+  mut skills_dir : String?
+  mut memory_dir : String?
+  mut context_window : Int?
   mut debug : Bool
   rest : Array[String]
 }
@@ -15,6 +18,9 @@ fn CliOptions::new() -> CliOptions {
     model: None,
     history: None,
     max_steps: None,
+    skills_dir: None,
+    memory_dir: None,
+    context_window: None,
     debug: false,
     rest: [],
   }
@@ -28,18 +34,32 @@ fn usage() -> String {
     #|  deepmoon repl [options]
     #|
     #|Options:
-    #|  --base-url <url>      OpenAI-compatible API base URL
-    #|  --model <model>       Chat Completions model name
-    #|  --history <path>      JSONL history file path
-    #|  --max-steps <n>       Maximum tool-calling steps (default: 8)
-    #|  --debug               Print full HTTP/tool debug output
-    #|  -h, --help            Show help
+    #|  --base-url <url>        OpenAI-compatible API base URL
+    #|  --model <model>         Chat Completions model name
+    #|  --history <path>        JSONL history file path
+    #|  --max-steps <n>         Maximum tool-calling steps (default: 8)
+    #|  --skills-dir <path>     Skills directory relative to the workspace (default: skills)
+    #|  --memory-dir <path>     Memory directory relative to the workspace (default: .deepmoon/memory)
+    #|  --context-window <n>    Context window used for compaction thresholds (default: 32000)
+    #|  --debug                 Print full HTTP/tool debug output
+    #|  -h, --help              Show help
     #|
     #|Env:
     #|  deepmoon_key / OPENAI_API_KEY
     #|  deepmoon_api / OPENAI_BASE_URL
     #|  OPENAI_MODEL
   )
+}
+
+///|
+fn parse_positive_int(flag : String, value : String) -> Int? {
+  let parsed = @string.parse_int(value) catch { _ => return None }
+  if parsed > 0 {
+    Some(parsed)
+  } else {
+    println("error: \{flag} must be greater than 0")
+    None
+  }
 }
 
 ///|
@@ -55,7 +75,7 @@ fn parse_options(args : ArrayView[String]) -> (CliOptions?, String?) {
         break
       }
       ["--debug", .. tail] => {
-        options.debug = false
+        options.debug = true
         continue tail
       }
       ["--base-url", value, .. tail] => {
@@ -70,14 +90,26 @@ fn parse_options(args : ArrayView[String]) -> (CliOptions?, String?) {
         options.history = Some(value)
         continue tail
       }
+      ["--skills-dir", value, .. tail] => {
+        options.skills_dir = Some(value)
+        continue tail
+      }
+      ["--memory-dir", value, .. tail] => {
+        options.memory_dir = Some(value)
+        continue tail
+      }
       ["--max-steps", value, .. tail] => {
-        let parsed = @string.parse_int(value) catch {
-          _ => return (None, Some("invalid --max-steps value `\{value}`"))
-        }
-        guard parsed > 0 else {
-          return (None, Some("--max-steps must be greater than 0"))
+        guard parse_positive_int("--max-steps", value) is Some(parsed) else {
+          return (None, Some("invalid --max-steps value `\{value}`"))
         }
         options.max_steps = Some(parsed)
+        continue tail
+      }
+      ["--context-window", value, .. tail] => {
+        guard parse_positive_int("--context-window", value) is Some(parsed) else {
+          return (None, Some("invalid --context-window value `\{value}`"))
+        }
+        options.context_window = Some(parsed)
         continue tail
       }
       [flag, ..] if flag.has_prefix("--") =>
@@ -130,6 +162,15 @@ fn choose_option_from_envs(
 }
 
 ///|
+fn require_relative_workspace_path(_name : String, path : String) -> String? {
+  if path_is_lexically_safe(path) {
+    Some(path)
+  } else {
+    None
+  }
+}
+
+///|
 fn build_config(options : CliOptions) -> (AgentConfig?, String?) {
   guard choose_option_from_envs(None, ["deepmoon_key", "OPENAI_API_KEY"], None)
     is Some(api_key) else {
@@ -159,6 +200,28 @@ fn build_config(options : CliOptions) -> (AgentConfig?, String?) {
     Some(value) => value
     None => 8
   }
+  let skills_dir = match options.skills_dir {
+    Some(path) =>
+      match require_relative_workspace_path("--skills-dir", path) {
+        Some(valid) => valid
+        None =>
+          return (None, Some("--skills-dir must stay within the workspace"))
+      }
+    None => "skills"
+  }
+  let memory_dir = match options.memory_dir {
+    Some(path) =>
+      match require_relative_workspace_path("--memory-dir", path) {
+        Some(valid) => valid
+        None =>
+          return (None, Some("--memory-dir must stay within the workspace"))
+      }
+    None => ".deepmoon/memory"
+  }
+  let context_window = match options.context_window {
+    Some(value) => value
+    None => 32000
+  }
   (
     Some({
       api_key,
@@ -166,6 +229,9 @@ fn build_config(options : CliOptions) -> (AgentConfig?, String?) {
       model,
       workspace,
       history_path,
+      skills_dir,
+      memory_dir,
+      context_window,
       max_steps,
       debug: options.debug,
     }),
@@ -176,13 +242,6 @@ fn build_config(options : CliOptions) -> (AgentConfig?, String?) {
 ///|
 fn has_help(args : ArrayView[String]) -> Bool {
   args.contains("-h") || args.contains("--help")
-}
-
-///|
-async fn seed_session(config : AgentConfig, messages : Array[Message]) -> Unit {
-  for message in messages {
-    append_history_message(config.history_path, message)
-  }
 }
 
 ///|
@@ -209,10 +268,24 @@ async fn run_command(args : ArrayView[String]) -> Unit {
     return
   }
   let task = options.rest.join(" ")
-  let messages = [Message::system(default_system_prompt()), Message::user(task)]
-  seed_session(config, messages)
-  let result = run_agent(config, HttpModelClient::new(), messages)
+  let client = HttpModelClient::new()
+  let session = open_main_session(config, client)
+  let registry = build_tool_registry(config, session, client)
+  let user_message = Message::user(task)
+  session.history.push(user_message)
+  append_persistent_message(config, session, user_message)
+  let result = run_agent(config, client, registry, session)
   println(result.final_text)
+}
+
+///|
+fn print_skills(session : SessionState) -> Unit {
+  println(session.available_skills_summary())
+}
+
+///|
+fn print_todos(session : SessionState) -> Unit {
+  println(render_todos(session.todos))
 }
 
 ///|
@@ -239,8 +312,8 @@ async fn repl_command(args : ArrayView[String]) -> Unit {
     return
   }
   let client = HttpModelClient::new()
-  let mut messages = [Message::system(default_system_prompt())]
-  seed_session(config, messages)
+  let session = open_main_session(config, client)
+  let registry = build_tool_registry(config, session, client)
   while true {
     @stdio.stdout.write("deepmoon> ")
     match @stdio.stdin.read_until("\n") {
@@ -252,9 +325,8 @@ async fn repl_command(args : ArrayView[String]) -> Unit {
         } else if input == "/exit" {
           break
         } else if input == "/clear" {
-          messages = [Message::system(default_system_prompt())]
-          seed_session(config, messages)
-          println("context cleared")
+          session.clear_working()
+          println("working context cleared")
           continue
         } else if input == "/debug on" {
           config.debug = true
@@ -264,12 +336,25 @@ async fn repl_command(args : ArrayView[String]) -> Unit {
           config.debug = false
           println("debug off")
           continue
+        } else if input == "/skills" {
+          print_skills(session)
+          continue
+        } else if input == "/todos" {
+          print_todos(session)
+          continue
+        } else if input == "/compact" {
+          session.force_compact = true
+          if compact_session_history(config, client, session) {
+            println("history compacted")
+          } else {
+            println("nothing to compact")
+          }
+          continue
         }
         let user_message = Message::user(input)
-        messages.push(user_message)
-        append_history_message(config.history_path, user_message)
-        let result = run_agent(config, client, messages)
-        messages = result.messages
+        session.history.push(user_message)
+        append_persistent_message(config, session, user_message)
+        let result = run_agent(config, client, registry, session)
         println(result.final_text)
       }
     }

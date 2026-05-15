@@ -1,23 +1,26 @@
 ///|
-pub(all) struct AgentConfig {
+pub struct AgentConfig {
   api_key : String
   base_url : String
   model : String
   workspace : String
   history_path : String?
+  skills_dir : String
+  memory_dir : String
+  context_window : Int
   max_steps : Int
   mut debug : Bool
 }
 
 ///|
-pub(all) struct ToolCall {
+pub struct ToolCall {
   id : String
   name : String
   arguments : String
 }
 
 ///|
-pub(all) struct Message {
+pub struct Message {
   role : String
   content : String?
   tool_calls : Array[ToolCall]
@@ -25,14 +28,58 @@ pub(all) struct Message {
 }
 
 ///|
-pub(all) struct ToolSpec {
+pub struct ToolSpec {
   name : String
   description : String
   parameters : Json
 }
 
 ///|
-pub(all) struct AgentResult {
+pub struct TokenUsage {
+  prompt_tokens : Int
+  completion_tokens : Int
+  total_tokens : Int
+}
+
+///|
+pub struct CompletionResult {
+  message : Message
+  usage : TokenUsage?
+}
+
+///|
+pub struct TodoItem {
+  id : Int
+  content : String
+  status : String
+}
+
+///|
+pub struct SkillMeta {
+  name : String
+  description : String
+  tags : String?
+  always : Bool
+  path : String
+}
+
+///|
+pub struct SkillDefinition {
+  meta : SkillMeta
+  body : String
+}
+
+///|
+pub struct SubagentSpec {
+  name : String
+  description : String
+  system_prompt : String
+  tool_names : Array[String]
+  max_turns : Int
+}
+
+///|
+pub struct AgentResult {
   final_text : String
   messages : Array[Message]
 }
@@ -66,16 +113,6 @@ pub fn Message::tool(tool_call_id : String, content : String) -> Message {
 }
 
 ///|
-pub fn default_system_prompt() -> String {
-  (
-    #|You are DeepMoon, a MoonBit native CLI coding agent.
-    #|Use tools when you need to inspect this workspace or run safe read-only commands.
-    #|All tools are confined to the current project directory. Never ask for file writes:
-    #|this first version can only read files, search text, list directories, and run safe commands.
-  )
-}
-
-///|
 pub(open) trait ModelClient {
-  async complete(Self, AgentConfig, Array[Message], Array[ToolSpec]) -> Message
+  async complete(Self, AgentConfig, Array[Message], Array[ToolSpec]) -> CompletionResult
 }

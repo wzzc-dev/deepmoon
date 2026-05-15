@@ -4,44 +4,106 @@ package "wzzc-dev/deepmoon"
 // Values
 pub async fn append_history_message(String?, Message) -> Unit
 
+pub async fn append_persistent_message(AgentConfig, SessionState, Message) -> Unit
+
+pub fn array_of_strings_schema(String) -> Json
+
+pub fn ascii_lower(String) -> String
+
+pub fn boolean_schema(String) -> Json
+
 pub fn build_chat_request(String, Array[Message], Array[ToolSpec]) -> Json
+
+pub async fn build_system_prompt(AgentConfig, SessionState) -> String
+
+pub fn[C : ModelClient] build_tool_registry(AgentConfig, SessionState, C) -> ToolRegistry
 
 pub async fn cli_main() -> Unit
 
 pub fn command_allowed(Array[String]) -> Bool
 
+pub async fn[C : ModelClient] compact_session_history(AgentConfig, C, SessionState) -> Bool
+
+pub async fn[C : ModelClient] compact_startup_history(AgentConfig, C, SessionState) -> Bool
+
+pub fn default_agent_base_prompt() -> String
+
+pub fn default_compact_prompt() -> String
+
 pub fn default_history_path() -> String
 
-pub fn default_system_prompt() -> String
+pub fn default_subagent_prompt(String) -> String
 
-pub fn default_tool_specs() -> Array[ToolSpec]
+pub fn default_subagent_specs() -> Array[SubagentSpec]
+
+pub fn describe_subagents() -> String
 
 pub async fn ensure_history_path(String) -> Unit
 
-pub fn parse_chat_response(Json) -> Message raise
+pub fn find_subagent_spec(String) -> SubagentSpec?
+
+pub fn integer_schema(String) -> Json
+
+pub fn join_workspace_path(String, String) -> String
+
+pub async fn load_skills(String) -> SkillsLoader
+
+pub fn object_schema(Map[String, Json], Array[String]) -> Json
+
+pub async fn[C : ModelClient] open_main_session(AgentConfig, C) -> SessionState
+
+pub async fn open_memory_store(String) -> MemoryStore
+
+pub async fn open_token_tracker(String) -> TokenTracker
+
+pub fn parent_dir(String) -> String
+
+pub fn parse_chat_response(Json) -> CompletionResult raise
+
+pub fn parse_message_json(Json) -> Message?
 
 pub fn path_is_lexically_safe(String) -> Bool
 
-pub async fn[C : ModelClient] run_agent(AgentConfig, C, Array[Message]) -> AgentResult
+pub fn render_todos(Array[TodoItem]) -> String
 
-pub async fn run_tool(AgentConfig, ToolCall) -> String
+pub async fn resolve_workspace_path(String, String) -> String
+
+pub async fn resolve_workspace_path_allow_missing(String, String) -> String
+
+pub async fn[C : ModelClient] run_agent(AgentConfig, C, ToolRegistry, SessionState) -> AgentResult
+
+pub fn should_compact_now(AgentConfig, SessionState) -> Bool
+
+pub fn string_schema(String) -> Json
+
+pub fn strip_wrapping_quotes(String) -> String
+
+pub fn summarize_text(String, Int) -> String
 
 // Errors
 
 // Types and methods
-pub(all) struct AgentConfig {
+pub struct AgentConfig {
   api_key : String
   base_url : String
   model : String
   workspace : String
   history_path : String?
+  skills_dir : String
+  memory_dir : String
+  context_window : Int
   max_steps : Int
   mut debug : Bool
 }
 
-pub(all) struct AgentResult {
+pub struct AgentResult {
   final_text : String
   messages : Array[Message]
+}
+
+pub struct CompletionResult {
+  message : Message
+  usage : TokenUsage?
 }
 
 pub struct HttpModelClient {
@@ -49,7 +111,24 @@ pub struct HttpModelClient {
 pub fn HttpModelClient::new() -> Self
 pub impl ModelClient for HttpModelClient
 
-pub(all) struct Message {
+pub(all) struct MemoryStore {
+  memory_dir : String
+  memory_file : String
+  user_file : String
+  history_file : String
+}
+pub async fn MemoryStore::append_compact_marker(Self) -> Unit
+pub async fn MemoryStore::append_episode(Self, String) -> Unit
+pub async fn MemoryStore::append_message(Self, Message) -> Unit
+pub async fn MemoryStore::load_unarchived_messages(Self) -> Array[Message]
+pub async fn MemoryStore::read_memory(Self) -> String
+pub async fn MemoryStore::read_today_episode(Self) -> String
+pub async fn MemoryStore::read_user(Self) -> String
+pub fn MemoryStore::today_episode_path(Self) -> String
+pub async fn MemoryStore::write_memory(Self, String) -> Unit
+pub async fn MemoryStore::write_user(Self, String) -> Unit
+
+pub struct Message {
   role : String
   content : String?
   tool_calls : Array[ToolCall]
@@ -59,17 +138,106 @@ pub fn Message::assistant(String?, Array[ToolCall]) -> Self
 pub fn Message::system(String) -> Self
 pub fn Message::to_chat_json(Self) -> Json
 pub fn Message::to_history_json(Self) -> Json
+pub fn Message::to_memory_json(Self, String) -> Json
 pub fn Message::tool(String, String) -> Self
 pub fn Message::user(String) -> Self
 
-pub(all) struct ToolCall {
+pub(all) struct SessionState {
+  base_prompt : String
+  mut history : Array[Message]
+  mut loaded_skills : Array[String]
+  mut todos : Array[TodoItem]
+  skills_loader : SkillsLoader?
+  memory_store : MemoryStore?
+  token_tracker : TokenTracker?
+  mut force_compact : Bool
+}
+pub fn SessionState::available_skills_summary(Self) -> String
+pub fn SessionState::clear_working(Self) -> Unit
+pub fn SessionState::context_skill_names(Self) -> Array[String]
+pub fn SessionState::loaded_skill_definitions(Self) -> Array[SkillDefinition]
+pub fn SessionState::mark_skill_loaded(Self, String) -> Bool
+pub fn SessionState::new(String, SkillsLoader?, MemoryStore?, TokenTracker?) -> Self
+pub fn SessionState::set_todos(Self, Array[TodoItem]) -> Unit
+
+pub struct SkillDefinition {
+  meta : SkillMeta
+  body : String
+}
+
+pub struct SkillMeta {
+  name : String
+  description : String
+  tags : String?
+  always : Bool
+  path : String
+}
+
+pub(all) struct SkillsLoader {
+  definitions : Map[String, SkillDefinition]
+  order : Array[String]
+}
+pub fn SkillsLoader::always_names(Self) -> Array[String]
+pub fn SkillsLoader::empty() -> Self
+pub fn SkillsLoader::get(Self, String) -> SkillDefinition?
+pub fn SkillsLoader::names(Self) -> Array[String]
+pub fn SkillsLoader::summary(Self, Array[String]) -> String
+
+pub struct SubagentSpec {
+  name : String
+  description : String
+  system_prompt : String
+  tool_names : Array[String]
+  max_turns : Int
+}
+
+pub struct TodoItem {
+  id : Int
+  content : String
+  status : String
+}
+
+pub(all) struct TokenTracker {
+  log_path : String
+  mut last_prompt_tokens : Int
+}
+pub async fn TokenTracker::record(Self, String, TokenUsage) -> Unit
+pub fn TokenTracker::should_compact(Self, Int) -> Bool
+
+pub struct TokenUsage {
+  prompt_tokens : Int
+  completion_tokens : Int
+  total_tokens : Int
+}
+
+pub(all) struct Tool {
+  name : String
+  description : String
+  parameters : Json
+  concurrency_safe : Bool
+  execute : async (Json) -> String
+}
+
+pub struct ToolCall {
   id : String
   name : String
   arguments : String
 }
 pub fn ToolCall::to_chat_json(Self) -> Json
 
-pub(all) struct ToolSpec {
+pub(all) struct ToolRegistry {
+  tools : Map[String, Tool]
+  order : Array[String]
+}
+pub fn ToolRegistry::contains(Self, String) -> Bool
+pub fn ToolRegistry::filter(Self, Array[String]) -> Self
+pub fn ToolRegistry::get(Self, String) -> Tool?
+pub fn ToolRegistry::new() -> Self
+pub fn ToolRegistry::register(Self, Tool) -> Unit
+pub async fn ToolRegistry::run_tool_call(Self, ToolCall) -> String
+pub fn ToolRegistry::tool_specs(Self) -> Array[ToolSpec]
+
+pub struct ToolSpec {
   name : String
   description : String
   parameters : Json
@@ -80,6 +248,6 @@ pub fn ToolSpec::to_chat_json(Self) -> Json
 
 // Traits
 pub(open) trait ModelClient {
-  async complete(Self, AgentConfig, Array[Message], Array[ToolSpec]) -> Message
+  async complete(Self, AgentConfig, Array[Message], Array[ToolSpec]) -> CompletionResult
 }
 

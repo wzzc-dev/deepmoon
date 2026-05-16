@@ -151,6 +151,9 @@ fn parse_tool_call(value : Json) -> ToolCall? {
   guard json_string_field(value, "id") is Some(id) else { return None }
   guard json_get(value, "function") is Some(fn_json) else { return None }
   guard json_string_field(fn_json, "name") is Some(name) else { return None }
+  guard id.trim().to_owned() != "" && name.trim().to_owned() != "" else {
+    return None
+  }
   let arguments = match json_string_field(fn_json, "arguments") {
     Some(arguments) => arguments
     None => "{}"
@@ -302,6 +305,9 @@ fn ChatStreamState::completion_result(
   for index in self.order {
     if self.builders.get(index) is Some(builder) {
       if builder.id is Some(id) && builder.name is Some(name) {
+        guard id.trim().to_owned() != "" && name.trim().to_owned() != "" else {
+          continue
+        }
         let raw_arguments = builder.arguments.to_string()
         let arguments = if raw_arguments == "" { "{}" } else { raw_arguments }
         tool_calls.push({ id, name, arguments })

@@ -24,6 +24,29 @@ fn chat_completions_url(config : AgentConfig) -> String {
 }
 
 ///|
+fn completion_needs_non_stream_fallback(result : CompletionResult) -> Bool {
+  if !result.message.tool_calls.is_empty() {
+    return false
+  }
+  match result.message.content {
+    Some(text) => text == ""
+    None => true
+  }
+}
+
+///|
+async fn emit_completion_text(
+  result : CompletionResult,
+  sink : ModelStreamSink,
+) -> Unit {
+  if result.message.tool_calls.is_empty() {
+    if result.message.content is Some(text) && text != "" {
+      sink.text_delta(text)
+    }
+  }
+}
+
+///|
 pub impl ModelClient for HttpModelClient with complete(
   _self,
   config,
@@ -56,7 +79,7 @@ pub impl ModelClient for HttpModelClient with complete(
 
 ///|
 pub impl ModelClient for HttpModelClient with complete_stream(
-  _self,
+  self,
   config,
   messages,
   tools,
@@ -101,5 +124,12 @@ pub impl ModelClient for HttpModelClient with complete_stream(
       }
     }
   }
-  state.completion_result()
+  let result = state.completion_result()
+  if completion_needs_non_stream_fallback(result) {
+    let fallback = self.complete(config, messages, tools)
+    emit_completion_text(fallback, sink)
+    fallback
+  } else {
+    result
+  }
 }

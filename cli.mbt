@@ -360,6 +360,14 @@ fn repl_line_text(line : String) -> String {
 }
 
 ///|
+fn strip_repl_continuation_marker(line : String) -> (String, Bool) {
+  match line.strip_suffix("\\") {
+    Some(prefix) => (prefix.to_owned(), true)
+    None => (line, false)
+  }
+}
+
+///|
 fn is_repl_command(input : String) -> Bool {
   match input {
     "/exit"
@@ -379,6 +387,7 @@ fn repl_read_result_from_lines(
   eof~ : Bool,
 ) -> ReplReadResult {
   let lines : Array[String] = []
+  let mut multiline = false
   for raw in raw_lines {
     let line = repl_line_text(raw)
     let trimmed = line.trim().to_owned()
@@ -390,7 +399,13 @@ fn repl_read_result_from_lines(
         return ReplMessage(lines.join("\n"))
       }
     } else {
-      lines.push(line)
+      let (content, continues) = strip_repl_continuation_marker(line)
+      lines.push(content)
+      if continues {
+        multiline = true
+      } else if !multiline {
+        return ReplMessage(lines.join("\n"))
+      }
     }
   }
   if eof {

@@ -154,6 +154,85 @@ async test "parse chat stream tool call argument chunks" {
 }
 
 ///|
+async test "parse chat stream ignores empty tool names" {
+  let out = StringBuilder::new()
+  let sink = test_stream_sink(out)
+  let state = ChatStreamState::new()
+  ignore(
+    state.apply_sse_line(
+      (
+        #|data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_empty","type":"function","function":{"name":"","arguments":"{}"}}]}}],"usage":null}
+      ),
+      sink,
+    ),
+  )
+  let result = state.completion_result()
+  assert_true(result.message.tool_calls.is_empty())
+  assert_true(result.message.content is Some(""))
+  assert_true(out.to_string() == "")
+}
+
+///|
+test "parse chat response ignores empty tool names" {
+  let response = @json.parse(
+    (
+      #|{
+      #|  "choices": [
+      #|    {
+      #|      "message": {
+      #|        "role": "assistant",
+      #|        "content": null,
+      #|        "tool_calls": [
+      #|          {
+      #|            "id": "call_empty",
+      #|            "type": "function",
+      #|            "function": {
+      #|              "name": "",
+      #|              "arguments": "{}"
+      #|            }
+      #|          }
+      #|        ]
+      #|      }
+      #|    }
+      #|  ]
+      #|}
+    ),
+  )
+  let result = parse_chat_response(response)
+  assert_true(result.message.tool_calls.is_empty())
+}
+
+///|
+test "empty stream completion requires non-stream fallback" {
+  assert_true(
+    completion_needs_non_stream_fallback({
+      message: Message::assistant(Some(""), []),
+      usage: None,
+    }),
+  )
+  assert_true(
+    completion_needs_non_stream_fallback({
+      message: Message::assistant(None, []),
+      usage: None,
+    }),
+  )
+  assert_false(
+    completion_needs_non_stream_fallback({
+      message: Message::assistant(Some("ok"), []),
+      usage: None,
+    }),
+  )
+  assert_false(
+    completion_needs_non_stream_fallback({
+      message: Message::assistant(None, [
+        { id: "call_1", name: "read_file", arguments: "{}" },
+      ]),
+      usage: None,
+    }),
+  )
+}
+
+///|
 struct FakeClient {
   mut calls : Int
 }
@@ -336,7 +415,13 @@ test "repl input helper supports commands multiline and eof submit" {
     repl_read_result_from_lines(["/exit"], eof=false) is ReplCommand("/exit"),
   )
   assert_true(
-    repl_read_result_from_lines(["hello", "world", ""], eof=false)
+    repl_read_result_from_lines(["hello"], eof=false) is ReplMessage("hello"),
+  )
+  assert_true(
+    repl_read_result_from_lines(["hello\\"], eof=false) is ReplNeedMore,
+  )
+  assert_true(
+    repl_read_result_from_lines(["hello\\", "world", ""], eof=false)
     is ReplMessage("hello\nworld"),
   )
   assert_true(repl_read_result_from_lines([""], eof=false) is ReplNeedMore)
